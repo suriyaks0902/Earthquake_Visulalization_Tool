@@ -1,0 +1,184 @@
+
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>3D Terrain with Accurate Shockwave</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.css" rel="stylesheet">
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.10.0/mapbox-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    .pole-marker {
+      width: 10px;
+      height: 60px;
+      background: red;
+      border-radius: 4px;
+      transform: translateY(-60px);
+      box-shadow: 0 0 5px rgba(0,0,0,0.4);
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<script>
+  const LAT = parseFloat("{{LAT}}");
+  const LON = parseFloat("{{LON}}");
+  const TOKEN = "{{TOKEN}}";
+  const MAG = parseFloat("{{MAG}}");
+  const SHOW_SHOCKWAVE = {{ SHOW_SHOCKWAVE | tojson }};
+  const SHOW_RINGS = {{ SHOW_RINGS | tojson }};
+  // console.log("SHOW_SHOCKWAVE =", SHOW_SHOCKWAVE);
+
+
+  mapboxgl.accessToken = TOKEN;
+  const map = new mapboxgl.Map({
+    container: 'map',
+    zoom: 5,
+    center: [LON, LAT],
+    pitch: 75,
+    bearing: 45,
+    style: 'mapbox://styles/mapbox/satellite-streets-v12'
+  });
+
+  map.on('style.load', () => {
+
+    // Set the initial view to the earthquake location
+    map.flyTo({
+      center: [LON, LAT],
+      zoom: 8,
+      speed: 0.8,
+      curve: 1.42,
+      pitch: 75,
+      bearing: 45,
+      essential: true
+    });
+
+    // Terrain
+    map.addSource('mapbox-dem', {
+      'type': 'raster-dem',
+      'url': 'mapbox://mapbox.mapbox-terrain-dem-v1',
+      'tileSize': 512,
+      'maxzoom': 14
+    });
+    map.setTerrain({ 'source': 'mapbox-dem', 'exaggeration': 1.5 });
+
+    // Pole Marker
+    const pole = document.createElement('div');
+    pole.className = 'pole-marker';
+    new mapboxgl.Marker(pole).setLngLat([LON, LAT]).addTo(map);
+
+    if (!(SHOW_SHOCKWAVE || SHOW_RINGS)) return;
+    
+    // if (SHOW_SHOCKWAVE) {
+    const ringCount = 5;
+    // const baseRadiusKm = MAG * 5;
+    const baseRadiusKm = parseFloat("{{ SPREAD_KM }}");
+
+    const shockwaveGeoJSON = {
+      type: "FeatureCollection",
+      features: []
+    };
+
+    // 🟢 Create thin concentric circles (not bands)
+    for (let i = 1; i <= ringCount; i++) {
+      const radius = baseRadiusKm * i;
+      const circle = turf.circle([LON, LAT], radius, {
+        steps: 100,
+        units: 'kilometers'
+      });
+      circle.id = i;
+      shockwaveGeoJSON.features.push(circle);
+    }
+
+    // for (let i = 1; i <= ringCount; i++) {
+    //   const outerRadius = baseRadiusKm * i;
+    //   const innerRadius = outerRadius * (i-0.95); // make each ring 1km thick
+
+    //   const outer = turf.circle([LON, LAT], outerRadius, {
+    //     steps: 80,
+    //     units: 'kilometers'
+    //   });
+    //   const inner = turf.circle([LON, LAT], innerRadius, {
+    //     steps: 80,
+    //     units: 'kilometers'
+    //   });
+
+    //   const ring = turf.difference(outer, inner);
+    //   if (ring) {
+    //     ring.id = i;
+    //     shockwaveGeoJSON.features.push(ring);
+    //   }
+    // }
+
+
+    map.addSource("shockwave", {
+      type: "geojson",
+      data: shockwaveGeoJSON
+    });
+
+    shockwaveGeoJSON.features.forEach((feature, idx) => {
+
+      const idSuffix = `-${idx}`;
+      const ringId = idx + 1;
+
+      
+      // 🔴 Shockwave Fill Effect
+      if (SHOW_SHOCKWAVE) {
+        const baseSpeed = 0.02 + (MAG * 0.005);  // faster for higher magnitude
+        const layerId = `shockwave-fill${idSuffix}`;
+        map.addLayer({
+          id: layerId,
+          type: "fill",
+          source: "shockwave",
+          filter: ["==", "$id", ringId],
+          paint: {
+            "fill-color": "rgba(255, 69, 0, 1)",  // orange-red
+            "fill-opacity": 0
+          }
+        });
+        let t = 0;
+        function animateRing() {
+          t += baseSpeed;
+          const opacity = 0.4 + 0.4 * Math.sin(t - idx * 0.7); // 0.4 to 0.8 pulse
+          map.setPaintProperty(layerId, "fill-opacity", Math.max(0, opacity));
+          requestAnimationFrame(animateRing);
+        }
+
+        animateRing();
+      }
+
+      // ⚪ Concentric Rings (White outlines)
+      if (SHOW_RINGS) {
+        map.addLayer({
+          id: `shockwave-ring${idSuffix}`,
+          type: "line",
+          source: "shockwave",
+          filter: ["==", "$id", ringId],
+          paint: {
+            "line-color": "rgba(255, 69, 0, 1)",
+            "line-width": 2,
+            "line-opacity": 0.5  // initial value
+          }
+        });
+
+        let t = 0;
+        const animateRing = () => {
+        t += 0.03;
+        const opacity = 0.5 + 0.4 * Math.sin(t - idx);  // pulse with phase offset
+        map.setPaintProperty(`shockwave-ring${idSuffix}`, "line-opacity", opacity);
+        requestAnimationFrame(animateRing);
+        };
+        animateRing();
+      }
+    });
+    // }
+  });
+</script>
+</body>
+</html>
+
